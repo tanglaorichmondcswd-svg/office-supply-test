@@ -1,7 +1,7 @@
 import { io } from 'socket.io-client';
 
-const SERVER_URL = 'https://ais-dev-fawlctnrytfe5rdsfig2at-217932031428.asia-southeast1.run.app';
-const APP_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6ImFwcF8xNzgyMjYyOTQ0NTU1IiwidHlwZSI6ImV4dGVybmFsX2FwcCIsImFwcE5hbWUiOiJSZW1peDogQ1NXRE8gTWFiYWxhY2F0IENpdHkgLSBPZmZpY2UgU3VwcGxpZXMgU3lzdGVtIiwiaWF0IjoxNzgyMjYyOTQ0LCJleHAiOjE4MTM3OTg5NDR9.ZFRDtwtqSN7jKWR5_V2XVvLq0jDvH_LKKdsROnxz2L4';
+const SERVER_URL = (import.meta as any).env?.VITE_OMNISERVER_URL || 'https://ais-dev-fawlctnrytfe5rdsfig2at-217932031428.asia-southeast1.run.app';
+const APP_TOKEN = (import.meta as any).env?.VITE_OMNISERVER_TOKEN || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6ImFwcF8xNzgyMjYyOTQ0NTU1IiwidHlwZSI6ImV4dGVybmFsX2FwcCIsImFwcE5hbWUiOiJSZW1peDogQ1NXRE8gTWFiYWxhY2F0IENpdHkgLSBPZmZpY2UgU3VwcGxpZXMgU3lzdGVtIiwiaWF0IjoxNzgyMjYyOTQ0LCJleHAiOjE4MTM3OTg5NDR9.ZFRDtwtqSN7jKWR5_V2XVvLq0jDvH_LKKdsROnxz2L4';
 
 // Initialize WebSocket connection
 export const socket = io(SERVER_URL, {
