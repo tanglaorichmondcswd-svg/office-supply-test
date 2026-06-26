@@ -17,25 +17,174 @@ socket.on('connect_error', (err) => {
   console.warn('OmniServer WebSocket connection error:', err.message);
 });
 
-// Local Storage Fallback implementation
+// --- OMNI HOST DATA SYNC ENGINE ---
+const HOST_DATA_URL = (import.meta as any).env?.VITE_OMNI_HOST_DATA_URL || 'https://ais-dev-cspw766qmfzgzsulbjkhi4-78153391540.asia-east1.run.app/api/host-data/cswdo-office-supplies-system';
+
+let globalDbState: { [collection: string]: any[] } = {};
+let isDbLoaded = false;
+let dbLoadPromise: Promise<void> | null = null;
+
+// Migrate legacy local storage fallbacks to the central host data
+const migrateLocalDataToHostState = () => {
+  const state: { [col: string]: any[] } = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith('omni_fallback_')) {
+      const colName = key.replace('omni_fallback_', '');
+      try {
+        const val = localStorage.getItem(key);
+        if (val) {
+          state[colName] = JSON.parse(val);
+        }
+      } catch (e) {}
+    }
+  }
+  return state;
+};
+
+// Save current DB state to the external Omni Host API
+export const saveDatabaseState = async () => {
+  try {
+    // Back up locally to storage first for optimistic offline usage
+    localStorage.setItem('omni_host_backup', JSON.stringify(globalDbState));
+
+    let response;
+    try {
+      response = await fetch('/api/proxy-host-data', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          collections: globalDbState,
+          updatedAt: new Date().toISOString()
+        })
+      });
+    } catch (proxyError) {
+      console.warn('Proxy save failed, attempting direct fetch fallback:', proxyError);
+      response = await fetch(HOST_DATA_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          collections: globalDbState,
+          updatedAt: new Date().toISOString()
+        })
+      });
+    }
+    
+    if (!response.ok) {
+      console.warn('Omni Host API returned non-OK status during save:', response.status);
+    } else {
+      console.log('Successfully synced database state to Omni Host API');
+    }
+  } catch (error) {
+    console.error('Failed to save database state to Omni Host API:', error);
+  }
+};
+
+// Load current DB state from the external Omni Host API
+export const loadDatabaseState = async () => {
+  try {
+    let response;
+    try {
+      response = await fetch('/api/proxy-host-data');
+    } catch (proxyError) {
+      console.warn('Proxy load failed, attempting direct fetch fallback:', proxyError);
+      response = await fetch(HOST_DATA_URL);
+    }
+
+    if (response.ok) {
+      const text = await response.text();
+      const trimmed = text.trim();
+      
+      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+        try {
+          const data = JSON.parse(text);
+          if (data && typeof data === 'object') {
+            if (data.collections && typeof data.collections === 'object') {
+              globalDbState = data.collections;
+            } else {
+              const keys = Object.keys(data);
+              if (keys.length > 0 && Array.isArray(data[keys[0]])) {
+                globalDbState = data;
+              } else {
+                globalDbState = {};
+              }
+            }
+            console.log('Loaded database state from Omni Host API:', Object.keys(globalDbState));
+            localStorage.setItem('omni_host_backup', JSON.stringify(globalDbState));
+            return;
+          }
+        } catch (jsonErr: any) {
+          console.warn('JSON parsing failed on received Omni Host data:', jsonErr.message);
+        }
+      } else {
+        console.warn('Omni Host API response did not contain valid JSON format.');
+      }
+    }
+  } catch (error) {
+    console.error('Failed to load database state from Omni Host API, checking backup:', error);
+  }
+
+  // Load from local storage backup if API fails
+  try {
+    const backup = localStorage.getItem('omni_host_backup');
+    if (backup) {
+      globalDbState = JSON.parse(backup);
+      console.log('Loaded database state from local backup.');
+    }
+  } catch (e) {
+    console.error('Failed to parse local backup:', e);
+  }
+
+  // If still completely empty, check and migrate legacy fallback keys
+  if (Object.keys(globalDbState).length === 0) {
+    const localMigrated = migrateLocalDataToHostState();
+    if (Object.keys(localMigrated).length > 0) {
+      console.log('Migrating legacy localStorage fallback data to new Omni Host API');
+      globalDbState = localMigrated;
+      saveDatabaseState();
+    }
+  }
+};
+
+export const ensureDbLoaded = async () => {
+  if (isDbLoaded) return;
+  if (!dbLoadPromise) {
+    dbLoadPromise = loadDatabaseState().then(() => {
+      isDbLoaded = true;
+    });
+  }
+  return dbLoadPromise;
+};
+
+// Start initial load immediately
+ensureDbLoaded();
+
+// Compatibility wrappers for existing caching helpers
 const getLocalData = (collection: string) => {
-  const data = localStorage.getItem(`omni_fallback_${collection}`);
-  return data ? JSON.parse(data) : [];
+  return globalDbState[collection] || [];
 };
 
 const setLocalData = (collection: string, data: any[]) => {
-  localStorage.setItem(`omni_fallback_${collection}`, JSON.stringify(data));
+  globalDbState[collection] = data;
+  saveDatabaseState();
 };
 
 const saveToLocal = (collection: string, item: any) => {
-  const data = getLocalData(collection);
+  if (!globalDbState[collection]) {
+    globalDbState[collection] = [];
+  }
+  const data = globalDbState[collection];
   const index = data.findIndex((i: any) => (i.id || i._id) === (item.id || item._id));
   if (index >= 0) {
     data[index] = { ...data[index], ...item };
   } else {
     data.push(item);
   }
-  setLocalData(collection, data);
+  saveDatabaseState();
 };
 
 // Helper for OmniServer API calls
@@ -174,7 +323,8 @@ export const doc = (dbRefOrColRef: any, collectionOrId?: string, ...idSegments: 
 };
 
 export const getDocs = async (colRef: any) => {
-  const data = await omniFetch(`/api/database/${colRef.name}`);
+  await ensureDbLoaded();
+  const data = globalDbState[colRef.name] || [];
   const docs = (Array.isArray(data) ? data : []).map((item: any) => ({
     id: item.id || item._id,
     ref: { id: item.id || item._id, collectionName: colRef.name, _type: 'mock_doc' },
@@ -187,7 +337,10 @@ export const getDocs = async (colRef: any) => {
 };
 
 export const getDoc = async (docRef: any) => {
-  const data = await omniFetch(`/api/database/${docRef.collectionName}/${docRef.id}`);
+  await ensureDbLoaded();
+  const collectionName = docRef.collectionName;
+  const list = globalDbState[collectionName] || [];
+  const data = list.find((item: any) => (item.id || item._id) === docRef.id) || null;
   return {
     exists: () => !!data,
     id: docRef.id,
@@ -197,39 +350,83 @@ export const getDoc = async (docRef: any) => {
 };
 
 export const setDoc = async (docRef: any, data: any) => {
-  return omniFetch(`/api/database/${docRef.collectionName}`, {
-    method: 'POST',
-    body: JSON.stringify({ ...data, id: docRef.id })
-  });
+  await ensureDbLoaded();
+  const collectionName = docRef.collectionName;
+  if (!globalDbState[collectionName]) {
+    globalDbState[collectionName] = [];
+  }
+  const list = globalDbState[collectionName];
+  const item = { ...data, id: docRef.id };
+  const index = list.findIndex((i: any) => (i.id || i._id) === docRef.id);
+  if (index >= 0) {
+    list[index] = item;
+  } else {
+    list.push(item);
+  }
+  await saveDatabaseState();
+  
+  try {
+    socket.emit('db_change', { collection: collectionName });
+  } catch (e) {}
+
+  return item;
 };
 
 export const addDoc = async (colRef: any, data: any) => {
-  return omniFetch(`/api/database/${colRef.name}`, {
-    method: 'POST',
-    body: JSON.stringify(data)
-  });
+  await ensureDbLoaded();
+  const collectionName = colRef.name;
+  if (!globalDbState[collectionName]) {
+    globalDbState[collectionName] = [];
+  }
+  const list = globalDbState[collectionName];
+  const id = data.id || Math.random().toString(36).substr(2, 9);
+  const item = { ...data, id };
+  list.push(item);
+  await saveDatabaseState();
+  
+  try {
+    socket.emit('db_change', { collection: collectionName });
+  } catch (e) {}
+
+  return { id, ...item };
 };
 
 export const updateDoc = async (docRef: any, data: any) => {
-  return omniFetch(`/api/database/${docRef.collectionName}`, {
-    method: 'POST',
-    body: JSON.stringify({ ...data, id: docRef.id })
-  });
+  await ensureDbLoaded();
+  const collectionName = docRef.collectionName;
+  if (!globalDbState[collectionName]) {
+    globalDbState[collectionName] = [];
+  }
+  const list = globalDbState[collectionName];
+  const index = list.findIndex((i: any) => (i.id || i._id) === docRef.id);
+  if (index >= 0) {
+    list[index] = { ...list[index], ...data, id: docRef.id };
+  } else {
+    list.push({ ...data, id: docRef.id });
+  }
+  await saveDatabaseState();
+  
+  try {
+    socket.emit('db_change', { collection: collectionName });
+  } catch (e) {}
+
+  return { id: docRef.id };
 };
 
 export const deleteDoc = async (docRef: any) => {
-  // Handle if docRef is from forEach (item.ref)
+  await ensureDbLoaded();
   const collectionName = docRef.collectionName;
-  const id = docRef.id;
-  
-  if (!collectionName) {
-     console.error('deleteDoc: collectionName is missing from ref', docRef);
-     return;
+  if (!collectionName) return;
+  const list = globalDbState[collectionName] || [];
+  const index = list.findIndex((i: any) => (i.id || i._id) === docRef.id);
+  if (index >= 0) {
+    list.splice(index, 1);
+    await saveDatabaseState();
+    
+    try {
+      socket.emit('db_change', { collection: collectionName });
+    } catch (e) {}
   }
-
-  return omniFetch(`/api/database/${collectionName}/${id}`, {
-    method: 'DELETE'
-  });
 };
 
 // File storage
@@ -304,7 +501,7 @@ export const orderBy = (field: string, direction: string = 'asc') => ({ type: 'o
 export const limit = (n: number) => ({ type: 'limit', n });
 export const where = (field: string, op: string, value: any) => ({ type: 'where', field, op, value });
 
-// Real-time listener using Sockets
+// Real-time listener using Sockets and Multi-tab Broadcast Sync
 export const onSnapshot: any = (queryOrRef: any, callback: (snapshot: any) => void, errorCallback?: any) => {
   const collectionName = queryOrRef.name || queryOrRef.collectionName;
   
@@ -319,11 +516,38 @@ export const onSnapshot: any = (queryOrRef: any, callback: (snapshot: any) => vo
   // Listen for updates via socket
   const eventName = `update:${collectionName}`;
   const listener = () => {
-    getDocs(queryOrRef).then(callback).catch(errorCallback);
+    loadDatabaseState().then(() => {
+      getDocs(queryOrRef).then(callback).catch(errorCallback);
+    });
+  };
+
+  const dbChangeListener = (data: any) => {
+    if (data && data.collection === collectionName) {
+      loadDatabaseState().then(() => {
+        getDocs(queryOrRef).then(callback).catch(errorCallback);
+      });
+    }
   };
 
   socket.on(eventName, listener);
-  return () => socket.off(eventName, listener);
+  socket.on('db_change', dbChangeListener);
+
+  // Storage listener for multi-tab synchronization
+  const storageListener = (e: StorageEvent) => {
+    if (e.key === 'omni_host_backup') {
+      try {
+        globalDbState = JSON.parse(e.newValue || '{}');
+        getDocs(queryOrRef).then(callback).catch(errorCallback);
+      } catch (err) {}
+    }
+  };
+  window.addEventListener('storage', storageListener);
+
+  return () => {
+    socket.off(eventName, listener);
+    socket.off('db_change', dbChangeListener);
+    window.removeEventListener('storage', storageListener);
+  };
 };
 
 export const serverTimestamp = () => new Date().toISOString();

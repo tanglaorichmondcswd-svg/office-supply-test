@@ -6,7 +6,7 @@ This guide explains how to run the **CSWDO Mabalacat City - Office Supplies Syst
 
 - **Node.js** (v18 or higher recommended)
 - **npm** or **yarn**
-- An active Internet connection (to reach the OmniServer)
+- An active Internet connection (to reach the Omni Host API and OmniServer WebSocket)
 
 ## Step-by-Step Installation
 
@@ -23,6 +23,7 @@ This guide explains how to run the **CSWDO Mabalacat City - Office Supplies Syst
    - Open the `.env` file and verify the configuration:
      - `VITE_OMNISERVER_URL`: Should point to your OmniServer.
      - `VITE_OMNISERVER_TOKEN`: Should be your authorized JWT token.
+     - `VITE_OMNI_HOST_DATA_URL`: Set to your Omni Host API endpoint (defaults to the `cswdo-office-supplies-system` identifier for this app).
      - `VITE_PORT`: Set to `3003` (as requested) or your preferred port.
 
 3. **Install Dependencies**
@@ -48,8 +49,9 @@ This guide explains how to run the **CSWDO Mabalacat City - Office Supplies Syst
 
 ## Connection to OMNI Host Cockpit
 
-The application is configured to connect to the OmniServer specified in your `.env` file. It uses:
-- **REST API**: For database operations (POST/GET/PUT/DELETE).
+The application is configured to connect to the Omni Host API specified in your `.env` file. It uses:
+- **Cloud Database Syncing**: Saving all persistent collections (items, requests, deliveries, budgets, movements) to your Omni Host API.
+- **REST API**: For database operations (POST/GET).
 - **WebSockets**: For real-time tracking (via `socket.io-client`).
 - **File Uploads**: via the `/api/files/upload` endpoint.
 
